@@ -1,0 +1,8 @@
+## Interface: 16001
+# Interface placeholder: replace 16001 above with the number from /run print((select(4, GetBuildInfo())))
+## Title: CharContext
+## Notes: Copy your character sheet, talents, gear, and quest log as Markdown with /cc.
+## Author: stianfro
+## Version: 1.0.0
+
+CharContext.lua
