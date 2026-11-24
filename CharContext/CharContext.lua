@@ -37,6 +37,15 @@ local function collectHeader(lines)
     local _, _, _, interface = call(GetBuildInfo)
     local forever = (WOW_PROJECT_CAMELOT and WOW_PROJECT_ID == WOW_PROJECT_CAMELOT)
         or (type(interface) == "number" and interface >= 16000 and interface < 17000)
+    if realm == nil or realm == "" then
+        if forever and GetRealmName then
+            realm = "n/a (realm name unavailable on Forever)"
+            local region = call(GetCurrentRegionName)
+            if type(region) == "string" and region ~= "" then realm = realm .. " - Region: " .. region end
+        elseif not forever then
+            realm = call(GetNormalizedRealmName)
+        end
+    end
     if (forever or call(RegionalUniqueNamesEnabled)) and name and surname and surname ~= "" then
         name = name .. " " .. surname
     end
@@ -51,9 +60,25 @@ local function collectHeader(lines)
     lines[#lines+1] = "Level " .. val(call(UnitLevel, "player")) .. " " .. val(call(UnitRace, "player"))
         .. " " .. val(call(UnitClass, "player")) .. " (" .. val(call(UnitFactionGroup, "player")) .. ") - Realm: " .. val(realm)
     lines[#lines+1] = "XP: " .. val(xp) .. "/" .. val(maxXP) .. " (" .. progress .. " toward next level, rested " .. val(rested) .. ")"
-    lines[#lines+1] = "Location: " .. val(call(GetZoneText)) .. " / " .. val(call(GetSubZoneText))
-        .. " - Hearth: " .. val(call(GetBindLocation))
+    local zone, subzone = call(GetZoneText), call(GetSubZoneText)
+    if subzone == nil or subzone == "" then subzone = call(GetMinimapZoneText) end
+    local location = val(zone)
+    if type(subzone) == "string" and subzone ~= "" and subzone ~= zone then
+        location = (zone and zone ~= "") and (location .. " / " .. subzone) or subzone
+    elseif not GetSubZoneText and not GetMinimapZoneText and zone then
+        location = location .. " / n/a"
+    end
+    lines[#lines+1] = "Location: " .. location .. " - Hearth: " .. val(call(GetBindLocation))
     lines[#lines+1] = "Gold: " .. gold
+end
+
+-- Preserve the difference between a missing getter and a value WoW forbids exporting.
+local function resourceValue(getter, ...)
+    if type(getter) ~= "function" then return nil end
+    local ok, value = pcall(getter, ...)
+    if not ok then return nil end
+    if not readable(value) then return "n/a (client-restricted)" end
+    if type(value) == "number" then return value end
 end
 
 local function collectStats(lines)
@@ -61,13 +86,13 @@ local function collectStats(lines)
         lines[#lines+1] = "- " .. label .. ": " .. val(value)
     end
     lines[#lines+1] = "## Stats"
-    stat("Health", val(call(UnitHealth, "player")) .. "/" .. val(call(UnitHealthMax, "player")))
-    local mana, maxMana = call(UnitPower, "player", 0), call(UnitPowerMax, "player", 0)
+    stat("Health", val(resourceValue(UnitHealth, "player")) .. " / " .. val(resourceValue(UnitHealthMax, "player")))
+    local mana, maxMana = resourceValue(UnitPower, "player", 0), resourceValue(UnitPowerMax, "player", 0)
     if call(UnitPowerType, "player") == 0 then
-        mana = mana or call(UnitMana, "player")
-        maxMana = maxMana or call(UnitManaMax, "player")
+        mana = mana or resourceValue(UnitPower, "player") or resourceValue(UnitMana, "player")
+        maxMana = maxMana or resourceValue(UnitPowerMax, "player") or resourceValue(UnitManaMax, "player")
     end
-    stat("Mana", val(mana) .. "/" .. val(maxMana))
+    stat("Mana", val(mana) .. " / " .. val(maxMana))
     for i, label in ipairs({"Stamina", "Intellect", "Spirit"}) do
         local _, effective = call(UnitStat, "player", i + 2)
         stat(label, effective)
@@ -97,18 +122,68 @@ local function collectStats(lines)
     else stat("Spell haste", pct(haste)) end
 end
 
+-- Use only the permanent-enchant line or the client's explicit localized label.
+local function tooltipText(text)
+    if not readable(text) or type(text) ~= "string" then return nil end
+    return (text:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|cn[%w_]+:", "")
+        :gsub("|r", ""):gsub("|H[^|]*|h(.-)|h", "%1"))
+end
+
+local function inventoryEnchantName(slot)
+    local tip = call(C_TooltipInfo and C_TooltipInfo.GetInventoryItem, "player", slot)
+    if not tip or not readable(tip.lines) or type(tip.lines) ~= "table" then return nil end
+    local kinds = Enum and Enum.TooltipDataLineType or {}
+    local format = tooltipText(ENCHANTED_TOOLTIP_LINE) or ""
+    local prefix, suffix = format:match("^(.-)%%s(.-)$")
+    local labeled
+    for _, line in ipairs(tip.lines) do
+        if readable(line) and type(line) == "table" and readable(line.type) then
+            local text = tooltipText(line.leftText)
+            if text and text ~= "" then
+                local name
+                if prefix and #prefix + #suffix > 0 and #text > #prefix + #suffix
+                    and text:sub(1, #prefix) == prefix
+                    and (#suffix == 0 or text:sub(-#suffix) == suffix) then
+                    name = text:sub(#prefix + 1, #text - #suffix)
+                end
+                if kinds.ItemEnchantmentPermanent and line.type == kinds.ItemEnchantmentPermanent then
+                    return name or text
+                end
+                if line.type == nil or line.type == kinds.None then labeled = labeled or name end
+            end
+        end
+    end
+    return labeled
+end
+
+local function unlinkedSlot(slot)
+    -- A successful nil/zero ID means empty. A failed or restricted read stays unknown.
+    if GetInventoryItemID then
+        local ok, id = pcall(GetInventoryItemID, "player", slot)
+        if not ok or not readable(id) then return "n/a" end
+        if id == nil or id == 0 then return "empty" end
+        if type(id) == "number" and id > 0 then return "item " .. id .. " (details n/a)" end
+    elseif C_Item and C_Item.DoesItemExist then
+        local loc = call(ItemLocation and ItemLocation.CreateFromEquipmentSlot, ItemLocation, slot)
+        if loc and call(C_Item.DoesItemExist, loc) == false then return "empty" end
+    end
+    return "n/a"
+end
+
 local function collectGear(lines)
     lines[#lines+1] = "## Equipped gear"
     local slots = {"Head", "Neck", "Shoulder", "Shirt", "Chest", "Waist", "Legs",
         "Feet", "Wrists", "Hands", "Finger 1", "Finger 2", "Trinket 1", "Trinket 2",
         "Back", "Main hand", "Off hand", "Ranged / relic", "Tabard", [0] = "Ammo"}
     for slot = 0, #slots do
-        local link = call(GetInventoryItemLink, "player", slot)
+        local linkOK, link = pcall(GetInventoryItemLink, "player", slot)
         local result
-        if type(link) == "string" then
+        if linkOK and not readable(link) then
+            result = "n/a"
+        elseif linkOK and type(link) == "string" and link ~= "" then
             local name = link:match("|h%[(.-)%]|h")
             local enchant = tonumber(link:match("item:%d+:([%-]?%d+)"))
-            local level
+            local level, enchantName
             -- Only read metadata after the client confirms the item is already cached.
             if call(C_Item and C_Item.IsItemDataCachedByID or IsItemDataCachedByID, link) then
                 local location = call(ItemLocation and ItemLocation.CreateFromEquipmentSlot, ItemLocation, slot)
@@ -119,12 +194,16 @@ local function collectGear(lines)
                     name = name or cachedName
                     level = level or (base and (val(base) .. " base"))
                 end
+                if enchant and enchant > 0 then enchantName = call(inventoryEnchantName, slot) end
             end
             result = val(name) .. " (ilvl " .. val(level) .. ")"
-            if enchant and enchant ~= 0 then result = result .. " (enchant " .. enchant .. ")" end
+            if enchantName then
+                result = result .. " (enchant: " .. enchantName .. ")"
+            elseif enchant and enchant > 0 then
+                result = result .. " (enchant ID " .. enchant .. ")"
+            end
         else
-            local id = call(function() return GetInventoryItemID("player", slot) or false end)
-            result = id == false and "empty" or (id and ("item " .. val(id) .. " (details n/a)") or "n/a")
+            result = unlinkedSlot(slot)
         end
         lines[#lines+1] = "- " .. slots[slot] .. ": " .. result
     end
@@ -272,48 +351,83 @@ end
 
 local function collectSkills(lines)
     lines[#lines + 1] = "## Professions and skills"
+    local groups, byName = {}, {}
+    local function group(title)
+        if not byName[title] then
+            local new = { title = title }
+            groups[#groups + 1], byName[title] = new, new
+        end
+        return byName[title]
+    end
+
+    local function add(bucket, name, rank, maximum, id, parent)
+        local row = { name = name, rank = rank, maximum = maximum, id = id, parent = parent }
+        for index, old in ipairs(bucket) do
+            if name and old.name == name then
+                -- Different IDs can produce identical display rows in the same group.
+                if rank == old.rank and maximum == old.maximum then return end
+                local child = parent and parent > 0 and parent == old.id
+                local related = child or (id and id > 0 and (id == old.id or id == old.parent))
+                local cap, oldCap = maximum or 0, old.maximum or 0
+                -- Prefer a tracked progression to its 1/1 registration or missing rank.
+                -- Keep unrelated, same-name lines when both have independent progress.
+                if related or cap <= 1 or oldCap <= 1 then
+                    local prefer = cap > oldCap or (cap == oldCap and (rank or -1) > (old.rank or -1))
+                    if (rank == nil) ~= (old.rank == nil) then prefer = rank ~= nil
+                    elseif related and id ~= old.id and cap > 1 and oldCap > 1 then prefer = child end
+                    if prefer then bucket[index] = row end
+                    return
+                end
+            end
+        end
+        bucket[#bucket + 1] = row
+    end
+
     local api = C_SkillInfo or {}
     if not (api.GetNumSkillLines and api.GetSkillLineInfo) then api = _G end
     local count = call(api.GetNumSkillLines)
-    if not count or not api.GetSkillLineInfo then
-        -- Some clients expose professions but have no character skill list.
-        if GetProfessions and GetProfessionInfo then
-            local primary1, primary2, archaeology, fishing, cooking, firstAid = call(GetProfessions)
-            local profs = {primary1, primary2, archaeology, fishing, cooking, firstAid}
-            for i = 1, 6 do
-                if i == 1 then lines[#lines + 1] = "### Professions" end
-                if i == 3 then lines[#lines + 1] = "### Secondary skills" end
-                if profs[i] then
-                    local name, _, rank, maximum = call(GetProfessionInfo, profs[i])
-                    lines[#lines + 1] = "- " .. ranked(name, rank, maximum)
-                end
-            end
-            lines[#lines + 1] = "Weapon and other skills: n/a"
-        else
-            lines[#lines + 1] = "n/a"
-        end
-        return
-    end
     local function row(i)
         if api ~= _G then
             local info = call(api.GetSkillLineInfo, i)
-            if info then return info.name, info.isHeader, info.isCollapsed, info.rank, info.maxRank end
+            if info then return info.name, info.isHeader, info.isCollapsed, info.rank, info.maxRank,
+                info.skillID, info.parentSkillLineID end
         else
             local name, header, expanded, rank, _, _, maximum = call(api.GetSkillLineInfo, i)
             return name, header and header ~= 0, not expanded or expanded == 0, rank, maximum
         end
     end
-    -- Use the client's localized profession, secondary, weapon and custom headers as-is.
-    for i = 1, count do
-        local name, header, collapsed, rank, maximum = row(i)
-        if header then
-            lines[#lines + 1] = "### " .. val(name)
-            if collapsed then lines[#lines + 1] = "- n/a (open this skill header and run /cc again)" end
-        else
-            lines[#lines + 1] = "- " .. ranked(name, rank, maximum)
+    if count and api.GetSkillLineInfo then
+        local current
+        for i = 1, count do
+            local name, header, collapsed, rank, maximum, id, parent = call(row, i)
+            if header then
+                current = group(val(name))
+                current.collapsed = collapsed
+            else
+                current = current or group("")
+                add(current, name, rank, maximum, id, parent)
+            end
+        end
+    elseif GetProfessions and GetProfessionInfo then
+        -- Some clients expose professions but have no character skill list.
+        local profs = { call(GetProfessions) }
+        local primary, secondary = group("Professions"), group("Secondary skills")
+        for i = 1, 6 do
+            if profs[i] then
+                local name, _, rank, maximum, _, _, id = call(GetProfessionInfo, profs[i])
+                add(i <= 2 and primary or secondary, name, rank, maximum, id)
+            end
         end
     end
-    if count == 0 then lines[#lines + 1] = "none" end
+    for _, bucket in ipairs(groups) do
+        if bucket.title ~= "" then lines[#lines + 1] = "### " .. bucket.title end
+        if bucket.collapsed then lines[#lines + 1] = "- n/a (open this skill header and run /cc again)" end
+        for _, skill in ipairs(bucket) do
+            lines[#lines + 1] = "- " .. ranked(skill.name, skill.rank, skill.maximum)
+        end
+    end
+    if #groups == 0 then lines[#lines + 1] = count == 0 and "none" or "n/a"
+    elseif not count or not api.GetSkillLineInfo then lines[#lines + 1] = "Weapon and other skills: n/a" end
 end
 
 local function questRow(log, index)

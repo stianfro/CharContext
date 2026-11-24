@@ -3,6 +3,6 @@
 ## Title: CharContext
 ## Notes: Copy your character sheet, talents, gear, and quest log as Markdown with /cc.
 ## Author: stianfro
-## Version: 1.0.0
+## Version: 1.0.1
 
 CharContext.lua

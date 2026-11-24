@@ -12,7 +12,7 @@ Type `/cc` in World of Warcraft: Forever to copy a Markdown snapshot of your cha
 | --- | --- |
 | `/cc` | Character, XP and rested XP, location and hearth, money, combat stats, talents, skills, equipment, quests, and active buff names |
 | `/cc quests` | Quest levels, zones, completion flags, and objective progress |
-| `/cc gear` | Equipped slots, item levels when cached, and readable enchant IDs |
+| `/cc gear` | Equipped slots, cached item levels, and enchant descriptions or IDs |
 | `/cc talents` | Points per tree and the rank of each purchased talent |
 | `/cc help` | Command list |
 
@@ -24,7 +24,7 @@ Install the **Forever** release through CurseForge when available, or extract th
 
 CharContext reads your own character through the in-game addon API when you run a command. The text stays in the window until you choose to copy it. The addon has no saved variables, automatic gameplay actions, background collection, chat output, or network integration.
 
-This release targets Forever 1.60.1 (interface `16001`). It uses the client’s talent trees, skill lines, quest log, item cache, and helpful auras. Missing or restricted data appears as `n/a`. If a collapsed skill header hides entries, open it in the Skills panel and take another snapshot. Quest selection and header state are preserved.
+This release targets Forever 1.60.1 (interface `16001`). It uses the client’s talent trees, skill lines, quest log, item cache, and helpful auras. Current health and mana can read `n/a (client-restricted)` while their maxima remain visible. If Forever withholds the realm name, the snapshot includes the region when available. Other missing data appears as `n/a`. If a collapsed skill header hides entries, open it in the Skills panel and take another snapshot. Quest selection and header state are preserved.
 
 ## Building the release ZIP
 
